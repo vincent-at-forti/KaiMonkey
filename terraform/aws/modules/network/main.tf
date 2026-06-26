@@ -32,6 +32,9 @@ resource "aws_subnet" "km_private_subnet" {
   cidr_block        = cidrsubnet(aws_vpc.km_vpc.cidr_block, 8, count.index)
   availability_zone = data.aws_availability_zones.available.names[count.index]
   vpc_id            = aws_vpc.km_vpc.id
+  
+  # VULNERABILITY: Assigning public IPs in a designated private subnet
+  map_public_ip_on_launch = true 
 
   tags = merge(var.default_tags, {
     Name = "km_private_subnet_${var.environment}"
@@ -118,6 +121,22 @@ resource "aws_security_group" "km_alb_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # VULNERABILITY: SSH open to the world
+  ingress {
+    protocol    = "tcp"
+    from_port   = 22
+    to_port     = 22
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # VULNERABILITY: RDP open to the world
+  ingress {
+    protocol    = "tcp"
+    from_port   = 3389
+    to_port     = 3389
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -141,6 +160,7 @@ resource "aws_security_group" "km_ecs_sg" {
     security_groups = [aws_security_group.km_alb_sg.id]
   }
 
+  # VULNERABILITY: Unrestricted egress on the backend instances
   egress {
     protocol    = "-1"
     from_port   = 0
@@ -154,9 +174,15 @@ resource "aws_security_group" "km_ecs_sg" {
 }
 
 resource "aws_lb" "km_lb" {
-  name            = "km-lb-${var.environment}"
-  subnets         = aws_subnet.km_public_subnet.*.id
-  security_groups = [aws_security_group.km_alb_sg.id]
+  name               = "km-lb-${var.environment}"
+  subnets            = aws_subnet.km_public_subnet.*.id
+  security_groups    = [aws_security_group.km_alb_sg.id]
+  
+  # VULNERABILITY: ALB Deletion protection is disabled
+  enable_deletion_protection = false
+
+  # VULNERABILITY: ALB is susceptible to HTTP Desync attacks if invalid headers aren't dropped
+  drop_invalid_header_fields = false
 }
 
 resource "aws_lb_target_group" "km_lb_target" {
@@ -171,6 +197,8 @@ resource "aws_lb_target_group" "km_lb_target" {
 # Redirect all traffic from the ALB to the target group
 resource "aws_lb_listener" "km_frontend_listener" {
   load_balancer_arn = aws_lb.km_lb.arn
+  
+  # VULNERABILITY: Using HTTP instead of HTTPS (Tools usually require a redirect or HTTPS listener)
   port              = "80"
   protocol          = "HTTP"
   default_action {
